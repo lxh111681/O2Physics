@@ -11,7 +11,7 @@ using namespace o2;
 using namespace o2::framework;
 using namespace o2::framework::expressions;
 
-struct LambdaTrackAnalysis {
+struct lambdaTrackAnalysis {
   Configurable<float> cutzvertex{"cutzvertex", 10.f, "Maximum absolute vertex z (cm)"};
   Configurable<bool> sel8{"sel8", true, "Apply Run 3 event selection"};
   Configurable<float> v0TracketaMax{"v0TracketaMax", 0.8f, "Maximum daughter |eta|"};
