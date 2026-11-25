@@ -300,6 +300,8 @@ struct LongrangecorrDerived {
                    kTHnSparseD, {{3, 0.5, 3.5}, cfgAxis.axisPtQA, cfgAxis.axisTpcSignal, cfgAxis.axisNsigmaTOF});
         histos.add("MC_ExpSigma_ptwise", "MC Expected TPC #sigma;Particle Species;p_{T} (GeV/c);#sigma_{exp}^{TPC};n#sigma_{TOF}",
                    kTHnSparseD, {{3, 0.5, 3.5}, cfgAxis.axisPtQA, cfgAxis.axisTpcExpSigma, cfgAxis.axisNsigmaTOF});
+        histos.add("MC_ExpTpcdEdx_ptwise", "MC Expected TPC dE/dx;Particle Species;p_{T} (GeV/c);Expected TPC dE/dx;n#sigma_{TOF}",
+                   kTHnSparseD, {{3, 0.5, 3.5}, cfgAxis.axisPtQA, cfgAxis.axisTpcSignal, cfgAxis.axisNsigmaTOF});
       }
     }
 
@@ -1077,28 +1079,34 @@ struct LongrangecorrDerived {
 
           if (cfgSel.cfgGetdEdx) {
             int pdgIdx = 0;
+            float tpcNsigMC = 0.0f;
             float tofNsigMC = -999.0f;
             float expSigmaMC = 0.0f;
             auto absPdg = std::abs(particle.pdgCode());
 
             if (absPdg == PDG_t::kPiPlus) {
               pdgIdx = 1; // o2-linter: disable=pdg/explicit-code (histogram species index)
+              tpcNsigMC = track.tpcNSigmaPi();
               tofNsigMC = track.tofNSigmaPi();
               expSigmaMC = track.tpcExpSigmaPi();
             } else if (absPdg == PDG_t::kKPlus) {
               pdgIdx = 2; // o2-linter: disable=pdg/explicit-code (histogram species index)
+              tpcNsigMC = track.tpcNSigmaKa();
               tofNsigMC = track.tofNSigmaKa();
               expSigmaMC = track.tpcExpSigmaKa();
             } else if (absPdg == PDG_t::kProton) {
               pdgIdx = 3; // o2-linter: disable=pdg/explicit-code (histogram species index)
+              tpcNsigMC = track.tpcNSigmaPr();
               tofNsigMC = track.tofNSigmaPr();
               expSigmaMC = track.tpcExpSigmaPr();
             }
 
             if (pdgIdx > 0) {
               if (track.hasTOF()) {
+                const float expSignalMC = track.tpcSignal() - (tpcNsigMC * expSigmaMC);
                 histos.fill(HIST("MC_TpcdEdx_TofNsigma_ptwise"), static_cast<double>(pdgIdx), track.pt(), track.tpcSignal(), tofNsigMC);
                 histos.fill(HIST("MC_ExpSigma_ptwise"), static_cast<double>(pdgIdx), track.pt(), expSigmaMC, tofNsigMC);
+                histos.fill(HIST("MC_ExpTpcdEdx_ptwise"), static_cast<double>(pdgIdx), track.pt(), expSignalMC, tofNsigMC);
               }
               bool passTofForMC = !cfgSel.cfgRequireTofInMCdEdx ||
                                   (track.hasTOF() && tofNsigMC > cfgSel.cfgCleanNsigmaTofMin && tofNsigMC < cfgSel.cfgCleanNsigmaTofMax);
@@ -1122,7 +1130,7 @@ struct LongrangecorrDerived {
             isPion = isTofPion && isTpcPion;
             isKaon = isTofKaon && isTpcKaon;
             isProton = isTofProton && isTpcProton;
-          } else if (track.pt() <= cfgSel.cfgTofPidPtCut || track.hasTOF()) {
+          } else if (track.pt() <= cfgSel.cfgTofPidPtCut) {
             isPion = isTpcPion;
             isKaon = isTpcKaon;
             isProton = isTpcProton;
@@ -1150,6 +1158,7 @@ struct LongrangecorrDerived {
 
   using CollStandardTable = soa::Join<aod::Collisions, aod::EvSels>;
   using TrksStandardTable = soa::Join<aod::Tracks, aod::TracksExtra, aod::TracksDCA, aod::TrackSelection, aod::pidTPCFullPi, aod::pidTPCFullKa, aod::pidTPCFullPr, aod::pidTOFbeta, aod::pidTOFFullPi, aod::pidTOFFullKa, aod::pidTOFFullPr>;
+  Preslice<aod::V0Datas> perColV0Data = aod::v0data::collisionId;
 
   template <typename TTracks>
   float countFallbackMultiplicity(TTracks const& tracks, float vz)
@@ -1195,7 +1204,15 @@ struct LongrangecorrDerived {
     float distOverP = v0.distovertotmom(rawCol.posX(), rawCol.posY(), rawCol.posZ());
 
     auto fillV0Probe = [&](double v0CleanType, TTrack const& probeTrack, float tpcNsig, float tofNsigReal, float expSigma, bool isPionProbe, bool isProtonProbe) {
-      if (!probeTrack.isGlobalTrack() || !myTrackFilter.IsSelected(probeTrack)) {
+      if (probeTrack.pt() < cfgSel.cfgPtCutMin || probeTrack.pt() > cfgSel.cfgPtCutMax) {
+        return;
+      }
+      if (std::abs(probeTrack.eta()) > cfgSel.cfgEtaCut) {
+        return;
+      }
+      if (probeTrack.tpcNClsFound() < cfgSel.cfgTpcMinNclsFound ||
+          probeTrack.tpcNClsCrossedRows() < cfgSel.cfgTpcMinNCrossedRows ||
+          probeTrack.tpcChi2NCl() > cfgSel.cfgTpcMaxChi2PerCluster) {
         return;
       }
 
@@ -1409,7 +1426,7 @@ struct LongrangecorrDerived {
       }
 
       if ((cfgSel.cfgGetV0CleanSample || cfgSel.cfgFillAfterCutWithV0) && cfgSel.cfgGetdEdx) {
-        auto v0sThisCol = V0s.sliceByCached(aod::v0data::collisionId, rawCol.globalIndex(), this->cache);
+        auto v0sThisCol = V0s.sliceBy(perColV0Data, rawCol.globalIndex());
         for (auto const& v0 : v0sThisCol) {
           auto const& posTrack = v0.template posTrack_as<TrksStandardTable>();
           auto const& negTrack = v0.template negTrack_as<TrksStandardTable>();
